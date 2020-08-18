@@ -5,8 +5,12 @@
 Settings settings;
 std::unordered_map<uint64_t, Combat> inCombat;
 std::set<std::string> bannedCommands;
-Mod::Scheduler::Token token = 0;
+bool running                = false;
+bool first   = true;
+Mod::Scheduler::Token token;
 DEFAULT_SETTINGS(settings);
+
+Mod::Scheduler::Token getToken() { return token; }
 
 void dllenter() { /*Mod::CommandSupport::GetInstance().AddListener(SIG("loaded"), initCommand);*/
 }
@@ -18,22 +22,37 @@ void PreInit() {
     auto &db = Mod::PlayerDatabase::GetInstance();
     if (inCombat.count(entry.xuid)) {
       auto packet    = TextPacket::createTextPacket<TextPacketType::JukeboxPopup>(settings.combatEnd);
-      Combat &combat = inCombat[entry.xuid];
+      uint64_t xuid = inCombat[entry.xuid].xuid;
       inCombat.erase(entry.xuid);
-      //entry.player->dropEquipment();
-      //entry.player->clearEquipment();
+      Inventory *invSource =
+          CallServerClassMethod<PlayerInventory *>("?getSupplies@Player@@QEAAAEAVPlayerInventory@@XZ", entry.player)
+              ->invectory.get();
+      CallServerClassMethod<void>("?dropAll@Inventory@@UEAAX_N@Z", invSource, false);
+      CallServerClassMethod<void>("?dropEquipment@Player@@UEAAXXZ", entry.player);
+      //int exp = CallServerClassMethod<int>("?getOnDeathExperience@Actor@@UEAAHXZ", entry.player);
+      //std::cout << exp << std::endl;
+      //CallServerFunction<void>(
+      //    "?spawnOrbs@ExperienceOrb@@SAXAEAVBlockSource@@AEBVVec3@@HW4DropType@1@PEAVPlayer@@@Z",
+      //    direct_access<BlockSource *>(entry.player, 0x320), entry.player->getPos(), exp, 3, nullptr);
+      //direct_access<char *>(entry.player, 0x328)[1072] = 1;
+      std::string annouce = boost::replace_all_copy(settings.logout, "%name%", entry.name);
+      auto packetAnnouce = TextPacket::createTextPacket<TextPacketType::SystemMessage>(annouce);
+      LocateService<Level>()->forEachPlayer([&](Player const &p) -> bool {
+        p.sendNetworkPacket(packetAnnouce);
+        return true;
+      });
       entry.player->kill();
-      //entry.player->tickDeath();
-      if (inCombat.count(combat.xuid)) {
-        if (inCombat[combat.xuid].xuid == entry.xuid) {
-          auto entry = db.Find(combat.xuid);
-          if (entry) { entry->player->sendNetworkPacket(packet); }
-          inCombat.erase(combat.xuid);
+      if (inCombat.count(xuid)) {
+        if (inCombat[xuid].xuid == entry.xuid) {
+          auto entry = db.Find(xuid);
+          if (entry) { entry->player->sendNetworkPacket(packet); 
+          }
+          inCombat.erase(xuid);
         }
       }
-      if (inCombat.empty() && token != 0) {
+      if (inCombat.empty() && running) {
         Mod::Scheduler::ClearInterval(token);
-        token = 0;
+        running = false;
       }
     }
   });
@@ -93,33 +112,33 @@ THook(void *, "?_hurt@Mob@@MEAA_NAEBVActorDamageSource@@H_N1@Z", Mob &mob, Actor
       }
       inCombat[it->xuid].xuid = entry->xuid;
       inCombat[it->xuid].time = settings.combatTime;
-      if (token == 0) {
+      if (!running) {
+        running = true;
         token = Mod::Scheduler::SetInterval(Mod::Scheduler::GameTick(20), [=](auto) {
-          auto &db = Mod::PlayerDatabase::GetInstance();
-          for (auto it = inCombat.begin(); it != inCombat.end();) {
-            auto player = db.Find(it->first);
-            if (!player) { 
+          if (running) {
+            auto &db = Mod::PlayerDatabase::GetInstance();
+            for (auto it = inCombat.begin(); it != inCombat.end();) {
+              auto player = db.Find(it->first);
+              if (!player) {
                 it->second.time--;
                 continue;
+              }
+              if (--it->second.time > 0) {
+                std::string annouce =
+                    boost::replace_all_copy(settings.inCombatLeft, "%time%", std::to_string(it->second.time));
+                auto packet = TextPacket::createTextPacket<TextPacketType::JukeboxPopup>(annouce);
+                player->player->sendNetworkPacket(packet);
+                ++it;
+              } else {
+                auto packet = TextPacket::createTextPacket<TextPacketType::JukeboxPopup>(settings.combatEnd);
+                player->player->sendNetworkPacket(packet);
+                it = inCombat.erase(it);
+              }
             }
-            if (--it->second.time > 0) {
-              std::string annouce = boost::replace_all_copy(settings.inCombatLeft, "%time%", std::to_string(it->second.time));
-              auto packet         = TextPacket::createTextPacket<TextPacketType::JukeboxPopup>(annouce);
-              player->player->sendNetworkPacket(packet);
-              ++it;
-            } else {
-              auto packet = TextPacket::createTextPacket<TextPacketType::JukeboxPopup>(settings.combatEnd);
-              player->player->sendNetworkPacket(packet);
-              std::cout << "xd1" << std::endl;
-              it = inCombat.erase(it);
-              std::cout << "xd2" << std::endl;
+            if (inCombat.empty() && running) {
+              Mod::Scheduler::SetTimeOut(Mod::Scheduler::GameTick(1), [=](auto) { Mod::Scheduler::ClearInterval(getToken()); });
+              running = false;
             }
-          }
-          if (inCombat.empty() && token != 0) { 
-              std::cout << "xd3" << std::endl;
-              Mod::Scheduler::ClearInterval(token);
-              std::cout << "xd4" << std::endl;
-              token = 0;
           }
         });
       }
@@ -147,9 +166,9 @@ THook(void *, "?die@Player@@UEAAXAEBVActorDamageSource@@@Z", Player &thi, void *
           inCombat.erase(combat.xuid); 
       }
     }
-    if (inCombat.empty() && token != 0) {
+    if (inCombat.empty() && running) {
       Mod::Scheduler::ClearInterval(token);
-      token = 0;
+      running = false;
     }
   }
   return original(thi, src);
@@ -166,7 +185,7 @@ THook(
   std::vector<std::string> results;
   boost::split(results, command, [](char c) { return c == ' '; });
   if (bannedCommands.count(results[0]) && inCombat.count(it->xuid)) {
-      auto packet = TextPacket::createTextPacket<TextPacketType::JukeboxPopup>(settings.blockedCommand);
+      auto packet = TextPacket::createTextPacket<TextPacketType::SystemMessage>(settings.blockedCommand);
       it->player->sendNetworkPacket(packet);
       return nullptr;
   }

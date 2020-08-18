@@ -37,10 +37,11 @@ struct Settings {
   std::string inCombatLeft = "You are in combat for %time% more seconds!";
   std::string combatEnd = "You are no longer in combat";
   std::string blockedCommand = "You cannot use this command during combat!";
+  std::string logout         = "%name% logout during fight!";
   template <typename IO> static inline bool io(IO f, Settings &settings, YAML::Node &node) { 
       return f(settings.combatTime, node["combatTime"]) && f(settings.bannedCommandsVector, node["bannedCommands"]) &&
            f(settings.inCombatMsg, node["inCombatMessage"]) && f(settings.inCombatLeft, node["inCombatLeftMessage"]) &&
-           f(settings.combatEnd, node["inCombatEndMessage"]) &&
+           f(settings.combatEnd, node["inCombatEndMessage"]) && f(settings.logout, node["logoutMessage"]) &&
            f(settings.blockedCommand, node["blockedCommandMessage"]);
   }
 };
