@@ -11,6 +11,9 @@ Mod::Scheduler::Token token;
 DEFAULT_SETTINGS(settings);
 
 Mod::Scheduler::Token getToken() { return token; }
+std::unordered_map<uint64_t, Combat>& getInCombat() {
+  return inCombat;
+}
 
 void dllenter() { /*Mod::CommandSupport::GetInstance().AddListener(SIG("loaded"), initCommand);*/
 }
@@ -20,10 +23,10 @@ void PreInit() {
   Mod::PlayerDatabase::GetInstance().AddListener(SIG("initialized"), [](Mod::PlayerEntry const &entry) {});
   Mod::PlayerDatabase::GetInstance().AddListener(SIG("left"), [](Mod::PlayerEntry const &entry) {
     auto &db = Mod::PlayerDatabase::GetInstance();
-    if (inCombat.count(entry.xuid)) {
+    if (getInCombat().count(entry.xuid)) {
       auto packet    = TextPacket::createTextPacket<TextPacketType::JukeboxPopup>(settings.combatEnd);
-      uint64_t xuid = inCombat[entry.xuid].xuid;
-      inCombat.erase(entry.xuid);
+      uint64_t xuid = getInCombat()[entry.xuid].xuid;
+      getInCombat().erase(entry.xuid);
       Inventory *invSource =
           CallServerClassMethod<PlayerInventory *>("?getSupplies@Player@@QEAAAEAVPlayerInventory@@XZ", entry.player)
               ->invectory.get();
@@ -42,16 +45,18 @@ void PreInit() {
         return true;
       });
       entry.player->kill();
-      if (inCombat.count(xuid)) {
-        if (inCombat[xuid].xuid == entry.xuid) {
+      if (getInCombat().count(xuid)) {
+        if (getInCombat()[xuid].xuid == entry.xuid) {
           auto entry = db.Find(xuid);
-          if (entry) { entry->player->sendNetworkPacket(packet); 
+          if (entry) { 
+              entry->player->sendNetworkPacket(packet); 
           }
-          inCombat.erase(xuid);
+          getInCombat().erase(xuid);
         }
       }
-      if (inCombat.empty() && running) {
-        Mod::Scheduler::ClearInterval(token);
+      if (getInCombat().empty() && running) {
+        Mod::Scheduler::SetTimeOut(
+            Mod::Scheduler::GameTick(1), [=](auto) { Mod::Scheduler::ClearInterval(getToken()); });
         running = false;
       }
     }
@@ -102,22 +107,22 @@ THook(void *, "?_hurt@Mob@@MEAA_NAEBVActorDamageSource@@H_N1@Z", Mob &mob, Actor
       if (entry->player->getCommandPermissionLevel() > CommandPermissionLevel::Any)
         return original(mob, src, i1, b1, b2);
       auto packet = TextPacket::createTextPacket<TextPacketType::JukeboxPopup>(settings.inCombatMsg);
-      if (!inCombat.count(entry->xuid)) { 
+      if (!getInCombat().count(entry->xuid)) { 
           entry->player->sendNetworkPacket(packet);
       }
-      inCombat[entry->xuid].xuid = it->xuid;
-      inCombat[entry->xuid].time = settings.combatTime;
-      if (!inCombat.count(it->xuid)) { 
+      getInCombat()[entry->xuid].xuid = it->xuid;
+      getInCombat()[entry->xuid].time = settings.combatTime;
+      if (!getInCombat().count(it->xuid)) { 
           it->player->sendNetworkPacket(packet);
       }
-      inCombat[it->xuid].xuid = entry->xuid;
-      inCombat[it->xuid].time = settings.combatTime;
+      getInCombat()[it->xuid].xuid = entry->xuid;
+      getInCombat()[it->xuid].time = settings.combatTime;
       if (!running) {
         running = true;
         token = Mod::Scheduler::SetInterval(Mod::Scheduler::GameTick(20), [=](auto) {
           if (running) {
             auto &db = Mod::PlayerDatabase::GetInstance();
-            for (auto it = inCombat.begin(); it != inCombat.end();) {
+            for (auto it = getInCombat().begin(); it != getInCombat().end();) {
               auto player = db.Find(it->first);
               if (!player) {
                 it->second.time--;
@@ -132,10 +137,10 @@ THook(void *, "?_hurt@Mob@@MEAA_NAEBVActorDamageSource@@H_N1@Z", Mob &mob, Actor
               } else {
                 auto packet = TextPacket::createTextPacket<TextPacketType::JukeboxPopup>(settings.combatEnd);
                 player->player->sendNetworkPacket(packet);
-                it = inCombat.erase(it);
+                it = getInCombat().erase(it);
               }
             }
-            if (inCombat.empty() && running) {
+            if (getInCombat().empty() && running) {
               Mod::Scheduler::SetTimeOut(Mod::Scheduler::GameTick(1), [=](auto) { Mod::Scheduler::ClearInterval(getToken()); });
               running = false;
             }
@@ -152,24 +157,27 @@ THook(void *, "?die@Player@@UEAAXAEBVActorDamageSource@@@Z", Player &thi, void *
   auto it  = db.Find((Player *) &thi);
   if (!it) return original(thi, src);
   if (it->player->getCommandPermissionLevel() > CommandPermissionLevel::Any) return original(thi, src);
-  if (inCombat.count(it->xuid)) {
+  if (getInCombat().count(it->xuid)) {
     auto packet = TextPacket::createTextPacket<TextPacketType::JukeboxPopup>(settings.combatEnd);
-    Combat &combat = inCombat[it->xuid];
-    inCombat.erase(it->xuid);
+    Combat &combat = getInCombat()[it->xuid];
+    getInCombat().erase(it->xuid);
     it->player->sendNetworkPacket(packet);
-    if (inCombat.count(combat.xuid)) {
-      if (inCombat[combat.xuid].xuid == it->xuid) { 
+    if (getInCombat().count(combat.xuid)) {
+      if (getInCombat()[combat.xuid].xuid == it->xuid) { 
           auto entry = db.Find(combat.xuid);
           if (entry) { 
             entry->player->sendNetworkPacket(packet);
           }
-          inCombat.erase(combat.xuid); 
+          getInCombat().erase(combat.xuid); 
       }
     }
-    if (inCombat.empty() && running) {
-      Mod::Scheduler::ClearInterval(token);
+    if (getInCombat().empty() && running) {
+      Mod::Scheduler::SetTimeOut(Mod::Scheduler::GameTick(1), [=](auto) { Mod::Scheduler::ClearInterval(getToken()); });
       running = false;
     }
+    ItemStack is;
+    is.set(10);
+
   }
   return original(thi, src);
 }
@@ -184,7 +192,7 @@ THook(
   command = command.substr(1);
   std::vector<std::string> results;
   boost::split(results, command, [](char c) { return c == ' '; });
-  if (bannedCommands.count(results[0]) && inCombat.count(it->xuid)) {
+  if (bannedCommands.count(results[0]) && getInCombat().count(it->xuid)) {
       auto packet = TextPacket::createTextPacket<TextPacketType::SystemMessage>(settings.blockedCommand);
       it->player->sendNetworkPacket(packet);
       return nullptr;
